@@ -19,5 +19,10 @@ def published_dir() -> Path:
     return data_dir() / "published"
 
 
+def archives_dir() -> Path:
+    """归档区:校验通过、原子改名后的完整 ZIP 才会出现在这里。"""
+    return data_dir() / "archives"
+
+
 def db_path() -> Path:
     return data_dir() / "app.db"

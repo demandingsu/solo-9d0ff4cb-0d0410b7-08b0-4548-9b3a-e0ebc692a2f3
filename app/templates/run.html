@@ -1,35 +1,61 @@
 {% extends "base.html" %}
 {% block head %}
-{% if run.status == "processing" %}<meta http-equiv="refresh" content="3">{% endif %}
+{% if run.status == "processing" or run.status == "archiving" %}<meta http-equiv="refresh" content="3">{% endif %}
 {% endblock %}
 {% block content %}
 <h2>运行 {{ run.run_number }}</h2>
 <p>状态:<span class="badge b-{{ run.status }}">{{ labels[run.status] }}</span><br>
 提交时间(UTC):{{ run.created_at }}
-{% if run.published_at %}<br>发布时间(UTC):{{ run.published_at }}{% endif %}</p>
+{% if run.published_at %}<br>发布时间(UTC):{{ run.published_at }}{% endif %}
+{% if run.archived_at %}<br>归档时间(UTC):{{ run.archived_at }}{% endif %}</p>
 
 {% if run.status == "failed" %}
 <p class="err">失败原因:{{ run.error }}</p>
 <p>本次未发布任何文件;修正输入后可用同一运行号重新提交。</p>
 {% elif run.status == "processing" %}
 <p>正在逐对拆分,页面每 3 秒自动刷新……</p>
+{% elif run.status == "archiving" %}
+<p>正在逐组核对 R1/R2 配对与入库对数并流式打包归档 ZIP,页面每 3 秒自动刷新……</p>
+<p>归档完成前散装双端文件仍可正常下载;归档完成后将仅提供归档 ZIP。</p>
 {% endif %}
 
-{% if run.status == "published" %}
+{% if run.archive_error and run.status == "published" %}
+<p class="err">上次归档未完成:{{ run.archive_error }}</p>
+{% endif %}
+
+{% if run.status == "published" or run.status == "archiving" or run.status == "archived" %}
 <p>总读段对:{{ run.total_pairs }}</p>
 <table>
-  <tr><th>分组</th><th>索引序列</th><th>对数</th><th>其中纠错</th><th>R1 下载</th><th>R2 下载</th></tr>
+  <tr><th>分组</th><th>索引序列</th><th>对数</th><th>其中纠错</th>
+  {% if run.status == "archived" %}<th>归档位置</th>{% else %}<th>R1 下载</th><th>R2 下载</th>{% endif %}</tr>
   {% for g in groups %}
   <tr>
     <td>{{ g.sample_id }}</td>
     <td>{{ g.index_seq or "—" }}</td>
     <td>{{ g.pairs }}</td>
     <td>{{ g.corrected }}</td>
+    {% if run.status == "archived" %}
+    <td>{{ archive_name }} 内 {{ g.r1 }} / {{ g.r2 }}</td>
+    {% else %}
     <td><a href="/runs/{{ run.id }}/download/{{ g.r1 }}">{{ g.r1 }}</a></td>
     <td><a href="/runs/{{ run.id }}/download/{{ g.r2 }}">{{ g.r2 }}</a></td>
+    {% endif %}
   </tr>
   {% endfor %}
 </table>
+
+{% if run.status == "archived" %}
+<p>归档 ZIP 内含全部双端 FASTQ、样本索引 <code>samples.csv</code>、
+计数清单 <code>counts.csv</code> 与处理日志 <code>demux.log</code>。
+计数仍按上表保留供追查。</p>
+<p><a href="/runs/{{ run.id }}/archive">下载归档 {{ archive_name }}</a></p>
+{% elif run.status == "published" %}
 <p>处理日志:<a href="/runs/{{ run.id }}/download/demux.log">demux.log</a></p>
+<form method="post" action="/runs/{{ run.id }}/archive">
+  <button type="submit">归档此运行(压缩并停止散装下载)</button>
+</form>
+{% elif run.status == "archiving" %}
+<p>处理日志:<a href="/runs/{{ run.id }}/download/demux.log">demux.log</a>(归档完成前仍可下载)</p>
+{% endif %}
 {% endif %}
 {% endblock %}

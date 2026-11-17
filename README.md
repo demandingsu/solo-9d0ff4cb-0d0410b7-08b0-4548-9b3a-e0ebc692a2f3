@@ -1,7 +1,9 @@
 # 泳道拆样台(fastq-demux)
 
 测序中心同一泳道的 R1 / R2 / I1 三份**未压缩** FASTQ,按样本索引 CSV 拆出成对读段。
-FastAPI + SQLite,逐对流式处理,不整份读入内存。
+FastAPI + SQLite,逐对流式处理,不整份读入内存。长期不用的已发布泳道可在运行页
+一键**归档**:逐组核对后把全部双端文件、样本索引与计数流式打包成可下载 ZIP,
+随后清理散装 FASTQ 腾出卷空间,页面计数始终保留供追查。
 
 ## 启动
 
@@ -26,6 +28,10 @@ uvicorn app.main:app --port 8000
    必须**等长且唯一**;样本号唯一,且不能叫 `undetermined`(保留给未分配组)。
 3. 提交后页面每 3 秒自动刷新;处理完成后按组提供 `样本_R1.fastq` / `样本_R2.fastq`
    下载、每组对数(含其中纠错对数)和处理日志 `demux.log`。
+4. 运行页点击"归档此运行":后台逐组核对 R1/R2 配对与入库对数,把全部双端 FASTQ、
+   样本索引 `samples.csv`、计数清单 `counts.csv` 与 `demux.log` 流式装入
+   `archives/<运行号>.zip`。归档完成后散装双端下载停止(返回 410),页面仍显示
+   原计数,并提供归档 ZIP 下载;重复提交只产生一份归档。
 
 ## 拆分规则
 
@@ -49,6 +55,28 @@ uvicorn app.main:app --port 8000
 - **计数可信**:计数与文件在同一次逐对扫描中产生,下载页只展示已发布运行的
   完整文件与对应计数。
 
+### 归档可靠性
+
+- **逐组核对后才打包**:归档先对每组核对 R1/R2 齐全、逐对读段号一致、记录数
+  与入库对数一致,且各组对数之和等于运行总对数;任一项不符即终止,运行状态与
+  散装文件原样保留(状态回到 `published`,原因记入 `archive_error` 并在页面提示)。
+- **半成品不对外**:ZIP 在 `data/staging/archive-<随机目录>/` 里流式打包
+  (1 MiB 分块,大文件不整份读入内存),完成后重新流式读取整个 ZIP 做
+  CRC32 与条目清单校验,通过才经 `os.rename` 原子发布到
+  `data/archives/<运行号>.zip`;`archiving` 期间不提供 ZIP 下载。
+- **先有完整副本,再删旧文件**:状态置 `archived` 之后才 unlink 散装 FASTQ。
+  已开始的散装下载持有打开的文件描述符,unlink 不影响其读完整文件;归档完成后
+  的新散装请求返回 410,只能下载完整归档——新请求永远拿不到半成品。
+- **重复提交幂等**:`archiving` 中的重复提交返回 409 且不启动第二份归档;
+  `archived` 后重复提交直接回运行页,磁盘上始终只有一份 ZIP。
+- **重启处理归档残留**:
+  - 归档 ZIP 通过全量 CRC 与条目核对 → 完成归档(置 `archived`、清散装);
+  - ZIP 不完整但散装发布目录完整 → 安全回退 `published`,可重新归档;
+  - 两份副本都不完整才标 `failed`;任何分支都不会删掉唯一完整副本。
+- **数据库自动迁移**:旧版 `runs` 表(无归档字段)启动时自动重建并保留全部
+  运行与计数数据,新增 `archiving`/`archived` 状态、`archived_at` 与
+  `archive_error` 字段。
+
 ## 已知限制
 
 - 仅支持未压缩的 4 行 FASTQ(不支持 .gz、不支持序列折行);上传 gzip 会以
@@ -58,17 +86,22 @@ uvicorn app.main:app --port 8000
 - 每个样本 + 未分配组各占用 2 个输出文件句柄,样本数极多(数千)时需调高
   进程 fd 上限。
 - 索引读长与样本索引长度不一致的读段进未分配组(不报错,见日志与计数)。
+- 归档 ZIP 不做加密;`undetermined` 组的双端文件同样纳入归档,但样本索引
+  `samples.csv` 只含真实样本(不含保留组)。
 
 ## 目录结构
 
 ```
 app/
-  main.py      # 路由、后台处理、原子发布、启动恢复
+  main.py      # 路由、后台处理、原子发布、归档编排、启动恢复
+  archive.py   # 归档核对、流式打包与 ZIP CRC 校验
   demux.py     # 逐对流式 FASTQ 解析与拆分核心
   samples.py   # 样本索引 CSV 解析校验
-  db.py        # SQLite schema 与连接
+  db.py        # SQLite schema、旧库迁移与连接
   config.py    # DATA_DIR 路径
   templates/   # 页面
-tests/test_app.py  # 关键情形自测(pytest)
-data/          # 运行期生成:app.db、staging/、published/
+tests/
+  test_app.py      # 拆样关键情形自测
+  test_archive.py  # 归档、失败回退、中断恢复、并发下载自测
+data/          # 运行期生成:app.db、staging/、published/、archives/
 ```
